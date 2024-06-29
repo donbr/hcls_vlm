@@ -1,0 +1,233 @@
+# Jupyter Notebook: Lite VLMs for Medical/Life Sciences Applications
+
+**Author:** Don Branson
+
+---
+
+## 1. Introduction
+
+**Notebook Overview**  
+- This notebook provides a comprehensive guide to developing and fine-tuning a Vision-Language Model (VLM) for medical and life sciences applications.  
+- You'll learn about data collection, model setup, prompt tuning, fine-tuning, evaluation, and deployment.  
+
+**Learning Objectives**  
+- Understand the end-to-end process of developing a VLM.
+- Gain hands-on experience with prompt tuning, data handling, model training, and evaluation.
+
+---
+
+## 2. Environment Setup
+
+**Installing Dependencies**
+
+```python
+!pip install -qU bitsandbytes datasets accelerate transformers peft gradio matplotlib pandas seaborn tensorboard tf-explain
+```
+
+**Importing Libraries**
+
+```python
+import torch
+import gradio as gr
+import matplotlib.pyplot as plt
+import pandas as pd
+import seaborn as sns
+from sklearn.metrics import classification_report, confusion_matrix
+from transformers import PaliGemmaForConditionalGeneration, PaliGemmaProcessor, AutoTokenizer, BitsAndBytesConfig
+from datasets import load_dataset, DatasetDict
+from peft import prepare_model_for_kbit_training, get_peft_model, LoraConfig
+from tensorflow.keras.callbacks import TensorBoard
+import tensorflow as tf
+from tf_explain.core.grad_cam import GradCAM
+import datetime
+```
+
+---
+
+## 3. Data Collection and Preparation
+
+**Data Sources**
+- **Primary Sources**: Vector store, PubMed, Arxiv
+- **Secondary Sources**: Tivoly, Wikipedia
+
+**Loading Datasets**
+
+```python
+# Load example dataset
+dataset = load_dataset("Abirate/english_quotes")
+```
+
+**Data Preprocessing**
+
+```python
+def preprocess_data(dataset):
+    return dataset.map(lambda samples: tokenizer(samples["quote"]), batched=True)
+
+preprocessed_dataset = preprocess_data(dataset)
+```
+
+**Train-Test Split**
+
+```python
+train_test_split = preprocessed_dataset["train"].train_test_split(test_size=0.2)
+dataset_dict = DatasetDict({
+    "train": train_test_split["train"],
+    "validation": train_test_split["test"]
+})
+```
+
+**Visualizing Dataset**
+
+```python
+df = pd.DataFrame(preprocessed_dataset["train"])
+df['quote_length'] = df['quote'].apply(len)
+plt.hist(df['quote_length'], bins=50)
+plt.title('Quote Length Distribution')
+plt.xlabel('Quote Length')
+plt.ylabel('Frequency')
+plt.show()
+```
+
+---
+
+## 4. Model Setup and Quantization
+
+**Loading and Quantizing the Base Model**
+
+```python
+bnb_config = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_quant_type="nf4", bnb_4bit_use_double_quant=True, bnb_4bit_compute_dtype=torch.bfloat16)
+model = PaliGemmaForConditionalGeneration.from_pretrained("google/gemma-2b", quantization_config=bnb_config, device_map='auto')
+tokenizer = AutoTokenizer.from_pretrained("google/gemma-2b")
+```
+
+---
+
+## 5. Prompt Tuning
+
+**Crafting Effective Prompts**
+
+```python
+text = "Describe the morphological characteristics of the cell image:"
+inputs = tokenizer(text, return_tensors="pt").to("cuda:0")
+outputs = model.generate(**inputs, max_new_tokens=32)
+print(tokenizer.decode(outputs[0], skip_special_tokens=True))
+```
+
+**Prompt Tuning Techniques**
+
+Experiment with different prompt structures to optimize model responses.
+
+---
+
+## 6. Fine-Tuning the Model
+
+**Configuring Fine-Tuning Parameters**
+
+```python
+peft_config = LoraConfig(r=16, lora_alpha=32, target_modules=["q_proj", "k_proj", "v_proj", "o_proj"], task_type="CAUSAL_LM")
+model = prepare_model_for_kbit_training(model)
+model = get_peft_model(model, peft_config)
+```
+
+**Training the Adapter Model**
+
+```python
+from trl import SFTTrainer, SFTConfig
+
+sft_config = SFTConfig(output_dir="gemma2b_quotes", max_steps=50, per_device_train_batch_size=1, learning_rate=2e-4, eval_steps=10)
+trainer = SFTTrainer(model=model, peft_config=peft_config, tokenizer=tokenizer, args=sft_config, train_dataset=dataset_dict["train"], eval_dataset=dataset_dict["validation"])
+trainer.train()
+```
+
+---
+
+## 7. Multi-Modal Retrieval-Augmented Generation (RAG)
+
+**Implementing RAG**
+
+```python
+# Example implementation of RAG
+def multi_modal_rag(text, image):
+    # Your RAG implementation here
+    pass
+```
+
+---
+
+## 8. Model Evaluation and Deployment
+
+**Evaluating the Model**
+
+**Training Metrics Visualization**
+
+```python
+import matplotlib.pyplot as plt
+
+# Example code to plot training metrics
+def plot_metrics(history):
+    plt.plot(history.history['loss'], label='Training Loss')
+    plt.plot(history.history['val_loss'], label='Validation Loss')
+    plt.xlabel('Epochs')
+    plt.ylabel('Loss')
+    plt.title('Training and Validation Loss')
+    plt.legend()
+    plt.show()
+
+# Assuming 'history' is the object returned by model.fit()
+# plot_metrics(history)
+```
+
+**Quantitative Evaluation**
+
+```python
+results = trainer.evaluate()
+print("Evaluation Results:", results)
+```
+
+**Confusion Matrix and Classification Report**
+
+```python
+y_true = [sample['label'] for sample in dataset_dict["validation"]]
+y_pred = [model.predict(sample['quote']) for sample in dataset_dict["validation"]]
+print(classification_report(y_true, y_pred))
+```
+
+**TensorBoard for Monitoring**
+
+```python
+log_dir = "logs/fit/" + datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+tensorboard_callback = TensorBoard(log_dir=log_dir, histogram_freq=1)
+
+# Include tensorboard_callback in your training callbacks
+# trainer = SFTTrainer(model=model, peft_config=peft_config, tokenizer=tokenizer, args=sft_config, train_dataset=dataset_dict["train"], eval_dataset=dataset_dict["validation"], callbacks=[tensorboard_callback])
+```
+
+**Model Explainability with Grad-CAM**
+
+```python
+explainer = GradCAM()
+# Assuming validation_data contains the necessary data
+# grid = explainer.explain(validation_data, model, class_index=0)
+# explainer.save(grid, ".", "grad_cam.png")
+```
+
+**Deploying the Model**
+
+```python
+def generate_description(image, text):
+    inputs = processor(text=text, images=image, return_tensors="pt").to("cuda:0")
+    outputs = model.generate(**inputs, max_new_tokens=32)
+    return processor.batch_decode(outputs, skip_special_tokens=True)[0]
+
+gr.Interface(fn=generate_description, inputs=["image", "text"], outputs="text").launch()
+```
+
+---
+
+## 9. Conclusion
+
+**Summary of Key Steps**
+- Recap the end-to-end process from data collection to model deployment.
+
+**Further Work**
+- Suggestions for future improvements and research directions.
